@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>जेमिनी AI असिस्टेंट</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* कस्टम CSS */
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            background: linear-gradient(135deg, #1f2937 0%, #374151 100%);
+        }
+        .chat-area {
+            height: 70vh;
+            overflow-y: auto;
+            scroll-behavior: smooth;
+        }
+        /* Markdown Styling (optional but good for rich responses) */
+        .markdown * {
+            max-width: 100%;
+        }
+    </style>
+</head>
+<body class="p-4 md:p-8">
+
+    <div class="max-w-4xl mx-auto bg-white rounded-xl shadow-2xl overflow-hidden">
+        <header class="p-4 bg-blue-600 text-white shadow-lg">
+            <h1 class="text-2xl font-bold text-center">💬 आपका जेमिनी AI असिस्टेंट</h1>
+            <p class="text-sm text-center opacity-80">लाइव स्कोर और इमेज प्रॉम्प्ट में मदद करता है! (Frontend Only)</p>
+        </header>
+
+        <!-- Chat Area -->
+        <div id="chat-area" class="chat-area p-4 space-y-4">
+            <!-- Initial Message -->
+            <div class="flex justify-start">
+                <div class="bg-gray-100 p-3 rounded-lg rounded-tl-none max-w-lg shadow-md">
+                    <p class="text-sm font-semibold text-gray-800">Hello! मैं आपका पर्सनल AI असिस्टेंट हूँ। क्या मदद करूँ? (Pic/Score पूछो!)</p>
+                </div>
+            </div>
+            <!-- Messages will be added here -->
+        </div>
+
+        <!-- Input Form -->
+        <form id="chat-form" class="p-4 border-t border-gray-200 bg-gray-50 flex gap-3">
+            <input type="text" id="user-input" placeholder="अपना सवाल यहाँ लिखें..." required 
+                   class="flex-grow p-3 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 transition duration-150">
+            <button type="submit" id="send-button"
+                    class="bg-green-500 text-white px-6 py-3 rounded-lg font-semibold hover:bg-green-600 transition duration-150 shadow-lg disabled:opacity-50">
+                भेजो
+            </button>
+        </form>
+    </div>
+
+    <script>
+        // ******
+        // ** यहाँ अपनी API Key डालें **
+        // ******
+        const API_KEY = "AIzaSyD4hypn_sUh2fPiiTw_xRTT7yC4Lpt8Xf8"; // आपकी असली Gemini API Key यहाँ डालें
+
+        if (!API_KEY) {
+            alert("FATAL ERROR: कृपया कोड में API_KEY सेट करें। यह ऐप बिना API Key के काम नहीं करेगी।");
+            document.getElementById('send-button').disabled = true;
+        }
+
+        const MODEL_NAME = 'gemini-2.5-flash';
+        const CHAT_API_URL = https://generativelanguage.googleapis.com/v1beta/models/${MODEL_NAME}:generateContent?key=${API_KEY};
+
+        const chatArea = document.getElementById('chat-area');
+        const chatForm = document.getElementById('chat-form');
+        const userInput = document.getElementById('user-input');
+        const sendButton = document.getElementById('send-button');
+
+        // चैट हिस्ट्री को स्टोर करने के लिए (यह Flask Session की जगह लेगा)
+        let chatHistory = []; 
+
+        // --- Utility Functions ---
+        
+        // 1. Loading Indicator
+        function showLoading() {
+            sendButton.disabled = true;
+            sendButton.textContent = 'सोच रहा है...';
+            userInput.disabled = true;
+        }
+
+        function hideLoading() {
+            sendButton.disabled = false;
+            sendButton.textContent = 'भेजो';
+            userInput.disabled = false;
+        }
+
+        // 2. Message Renderer
+        function displayMessage(text, role) {
+            const messageWrapper = document.createElement('div');
+            messageWrapper.className = flex ${role === 'user' ? 'justify-end' : 'justify-start'};
+
+            const messageBubble = document.createElement('div');
+            messageBubble.className = p-3 rounded-xl max-w-lg shadow-lg text-sm markdown ${role === 'user' ? 'bg-blue-600 text-white rounded-br-none' : 'bg-gray-100 text-gray-800 rounded-tl-none'};
+            messageBubble.innerHTML = text.replace(/\n/g, '<br>'); // Newlines to <br>
+
+            messageWrapper.appendChild(messageBubble);
+            chatArea.appendChild(messageWrapper);
+            chatArea.scrollTop = chatArea.scrollHeight; // Auto-scroll
+        }
+        
+        // 3. API Call with Exponential Backoff for retries
+        async function fetchWithRetry(url, payload, maxRetries = 5) {
+            for (let i = 0; i < maxRetries; i++) {
+                try {
+                    const response = await fetch(url, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+
+                    if (response.status === 429 && i < maxRetries - 1) {
+                        const delay = Math.pow(2, i) * 1000;
+                        await new Promise(resolve => setTimeout(resolve, delay));
+                        continue;
+                    }
+
+                    if (!response.ok) {
+                        throw new Error(API Request failed with status: ${response.status});
+                    }
+                    
+                    return await response.json();
+
+                } catch (error) {
+                    if (i === maxRetries - 1) {
+                         throw new Error(Request failed after ${maxRetries} retries. Error: ${error.message});
+                    }
+                }
+            }
+        }
+
+
+        // --- Main Logic ---
+
+        async function handleChat(event) {
+            event.preventDefault();
+            if (sendButton.disabled) return;
+
+            const userQuery = userInput.value.trim();
+            if (!userQuery) return;
+
+            displayMessage(userQuery, 'user');
+            userInput.value = '';
+            showLoading();
+
+            try {
+                // 1. History update
+                chatHistory.push({ role: "user", parts: [{ text: userQuery }] });
+                
+                let assistantResponseText = "";
+                let finalQueryForGemini = userQuery;
+
+                // --- FEATURE LOGIC (Check and Re-route) ---
+                const lowerQuery = userQuery.toLowerCase();
+                
+                // A. SCORE CHECK
+                if (lowerQuery.includes("score") || lowerQuery.includes("cricket") || lowerQuery.includes("livescore") || lowerQuery.includes("kitna bana")) {
+                    finalQueryForGemini = User ne kaha hai: '${userQuery}'. Tum is sawal ka jawab dene ke liye ek perfect Google search query (sawaal) banao, jisse user ko turant live score mil jaaye. Jawab sirf ek line ka hona chahiye jismein woh search query ho.;
+                    
+                    // We call the model to generate the search query
+                    const queryPayload = {
+                        contents: [{ role: "user", parts: [{ text: finalQueryForGemini }] }],
+                    };
+                    const queryResponse = await fetchWithRetry(CHAT_API_URL, queryPayload);
+                    const search_query = queryResponse.candidates?.[0]?.content?.parts?.[0]?.text?.trim().split('\n')[0] || "live cricket score today";
+
+                    const google_link = https://www.google.com/search?q=${search_query.replace(/ /g, '+')};
+                
+                    assistantResponseText = (
+                        "Main khud real-time score nahi dekh sakta, lekin main aapko turant score dhoondhne mein madad karta hoon. "
+                        "Aap niche diye gaye link par turant click karke score dekh sakte hain:<br><br>"
+                        + <a href='${google_link}' target='_blank' class='inline-block bg-green-500 text-white p-2 rounded-lg font-bold hover:bg-green-600 transition duration-150'>🏏 Turant Live Score Dekhein 🏏</a>
+                    );
+
+                    // Update history with a placeholder or ignore the special turn
+                    chatHistory.pop(); // Remove the user query for this special turn to keep context clean
+                    
+                // B. PIC CHECK
+                } else if (lowerQuery.includes("pic banao") || lowerQuery.includes("tasveer banao") || lowerQuery.includes("image banao")) {
+                    finalQueryForGemini = User ne kaha hai: '${userQuery}'. Tum is sawal ka jawab dene ke liye ek perfect, *high-quality image prompt* banao jise user *Microsoft Copilot* jaise free tool mein use kar sake. Jawab mein *pehli line* sirf woh *prompt* honi chahiye.;
+                    
+                    // We call the model to generate the image prompt
+                    const promptPayload = {
+                        contents: [{ role: "user", parts: [{ text: finalQueryForGemini }] }],
+                    };
+                    const promptResponse = await fetchWithRetry(CHAT_API_URL, promptPayload);
+                    const prompt_text = promptResponse.candidates?.[0]?.content?.parts?.[0]?.text?.trim().split('\n')[0] || "A beautiful watercolor painting of a futuristic city.";
+
+                    assistantResponseText = (
+                        "Main aapke liye tasveer nahi bana sakta, lekin main aapko free AI tool ke liye perfect prompt bana sakta hoon.<br><br>"
+                        + "Aap is Prompt ko Microsoft Copilot mein paste karein:<br>"
+                        + <span class='font-mono text-blue-600 bg-blue-100 p-1 rounded-md inline-block mt-2 break-all'>${prompt_text}</span><br><br>
+                        + "Iske baad aapko apni tasveer mil jaayegi!"
+                    );
+                    
+                    chatHistory.pop(); // Remove the user query for this special turn to keep context clean
+
+                // C. NORMAL CHAT
+                } else {
+                    
+                    // Normal chat payload with full history
+                    const chatPayload = {
+                        contents: chatHistory,
+                    };
+                    const geminiResponse = await fetchWithRetry(CHAT_API_URL, chatPayload);
+                    
+                    assistantResponseText = geminiResponse.candidates?.[0]?.content?.parts?.[0]?.text || "माफ़ करना, बात-चीत में कोई गड़बड़ हो गई।";
+
+                    // Update history for memory (for the next turn)
+                    chatHistory.push({ role: "model", parts: [{ text: assistantResponseText }] });
+                }
+
+                // Display final response
+                displayMessage(assistantResponseText, 'assistant');
+
+            } catch (error) {
+                console.error("Gemini API Error:", error);
+                displayMessage("माफ़ करना, API या नेटवर्क में कोई बड़ी गड़बड़ी हो गई। कृपया कंसोल देखें।", 'assistant');
+                chatHistory.pop(); // Remove user message if API failed
+            } finally {
+                hideLoading();
+            }
+        }
+
+        chatForm.addEventListener('submit', handleChat);
+
+        // API Key safety check on load
+        window.onload = () => {
+             if (API_KEY.length < 30) {
+                 const initialMessage = document.querySelector('.assistant-message p');
+                 initialMessage.innerHTML = "🚨 *CONFIGURATION ERROR!* 🚨 कृपया कोड में अपनी API_KEY डालें और पेज को रीलोड करें।";
+                 initialMessage.classList.add('text-red-600', 'font-bold');
+             }
+        };
+
+    </script>
+</body>
+</html>
